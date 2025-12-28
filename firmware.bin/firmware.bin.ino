@@ -2,144 +2,135 @@
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <Update.h>
-#include <Preferences.h>
 
-/* ================= PIN CONFIG ================= */
-#define LED_PIN 2   // Onboard LED
+/* ================= CONFIG ================= */
+#define LED_PIN 2
+#define CURRENT_VERSION "1.0.0"
 
-/* ================= WIFI CONFIG ================= */
+/* ================= WIFI ================= */
 const char* ssid     = "COFE_B";
 const char* password = "COFE12345B";
 
-/* ================= OTA CONFIG ================= */
-// GitHub RAW firmware URL
+/* ================= OTA URL ================= */
+const char* versionUrl =
+"https://raw.githubusercontent.com/sarvindk/esp32-ota/main/version.txt";
+
 const char* firmwareUrl =
 "https://raw.githubusercontent.com/sarvindk/esp32-ota/main/firmware.bin";
 
-/* ================= GLOBAL OBJECTS ================= */
+/* ================= GLOBAL ================= */
 WiFiClientSecure client;
-Preferences prefs;
+bool otaChecked = false;
 
-/* ================= WIFI EVENT HANDLER ================= */
+/* ================= WIFI EVENT ================= */
 void WiFiEvent(WiFiEvent_t event) {
-  switch (event) {
-
-    case ARDUINO_EVENT_WIFI_STA_CONNECTED:
-      Serial.println("WiFi connected");
-      break;
-
-    case ARDUINO_EVENT_WIFI_STA_GOT_IP:
-      Serial.print("IP Address: ");
-      Serial.println(WiFi.localIP());
-      break;
-
-    case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
-      Serial.println("WiFi disconnected. Reconnecting...");
-      WiFi.reconnect();
-      break;
-
-    default:
-      break;
+  if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP && !otaChecked) {
+    otaChecked = true;
+    Serial.println("WiFi connected");
+    Serial.print("IP: ");
+    Serial.println(WiFi.localIP());
+    checkVersionAndOTA();
   }
 }
 
-/* ================= OTA FUNCTION ================= */
-void doOTA() {
+/* ================= VERSION CHECK ================= */
+String getRemoteVersion() {
+  client.setInsecure();
+  HTTPClient http;
 
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("WiFi not connected. OTA skipped.");
-    return;
+  Serial.println("Checking version...");
+  http.begin(client, versionUrl);
+
+  int httpCode = http.GET();
+  if (httpCode != HTTP_CODE_OK) {
+    Serial.printf("Version check failed: %d\n", httpCode);
+    http.end();
+    return "";
   }
 
-  Serial.println("Starting OTA update...");
-  client.setInsecure();   // HTTPS (testing)
+  String version = http.getString();
+  version.trim();
+  http.end();
+
+  Serial.print("Remote version: ");
+  Serial.println(version);
+  return version;
+}
+
+/* ================= OTA ================= */
+void doOTA() {
+  Serial.println("Starting OTA...");
 
   HTTPClient http;
   http.begin(client, firmwareUrl);
 
   int httpCode = http.GET();
   if (httpCode != HTTP_CODE_OK) {
-    Serial.printf("OTA failed. HTTP code: %d\n", httpCode);
+    Serial.printf("Firmware download failed: %d\n", httpCode);
     http.end();
     return;
   }
 
   int contentLength = http.getSize();
-  Serial.printf("Firmware Size: %d bytes\n", contentLength);
-
   if (!Update.begin(contentLength)) {
-    Serial.println("Not enough space for OTA");
+    Serial.println("Not enough space");
     http.end();
     return;
   }
 
   WiFiClient* stream = http.getStreamPtr();
-  size_t written = 0;
   uint8_t buff[128];
+  size_t written = 0;
 
-  // LED BLINK while downloading
   while (written < contentLength) {
     size_t available = stream->available();
     if (available) {
-      size_t readBytes = stream->readBytes(buff, min(available, sizeof(buff)));
-      Update.write(buff, readBytes);
-      written += readBytes;
-
-      digitalWrite(LED_PIN, !digitalRead(LED_PIN)); // blink
-      delay(50);
+      size_t read = stream->readBytes(buff, min(available, sizeof(buff)));
+      Update.write(buff, read);
+      written += read;
+      digitalWrite(LED_PIN, !digitalRead(LED_PIN));
+      delay(30);
     }
   }
 
-  if (Update.end()) {
-    if (Update.isFinished()) {
-      Serial.println("OTA Update Success!");
-      prefs.putBool("done", true);   // Mark OTA done
-      delay(1000);
-      ESP.restart();
-    } else {
-      Serial.println("OTA not finished");
-    }
+  if (Update.end() && Update.isFinished()) {
+    Serial.println("OTA SUCCESS, rebooting...");
+    delay(1000);
+    ESP.restart();
   } else {
-    Serial.printf("OTA Error: %d\n", Update.getError());
+    Serial.println("OTA FAILED");
   }
 
   http.end();
 }
 
+/* ================= LOGIC ================= */
+void checkVersionAndOTA() {
+  String remoteVersion = getRemoteVersion();
+  if (remoteVersion == "") return;
+
+  if (remoteVersion != CURRENT_VERSION) {
+    Serial.println("New version found!");
+    doOTA();
+  } else {
+    Serial.println("Already latest version");
+    digitalWrite(LED_PIN, HIGH);
+  }
+}
+
 /* ================= SETUP ================= */
 void setup() {
   Serial.begin(115200);
-  delay(1000);
-
   pinMode(LED_PIN, OUTPUT);
-  digitalWrite(LED_PIN, LOW);   // LED OFF (Before OTA)
-
-  prefs.begin("ota", false);
+  digitalWrite(LED_PIN, LOW);
 
   WiFi.onEvent(WiFiEvent);
   WiFi.begin(ssid, password);
 
-  Serial.println("Connecting to WiFi...");
-
-  unsigned long startTime = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - startTime < 10000) {
-    delay(500);
-    Serial.print(".");
-  }
-  Serial.println();
-
-  bool otaDone = prefs.getBool("done", false);
-
-  if (!otaDone) {
-    doOTA();   // OTA runs only once
-  } else {
-    Serial.println("OTA already completed.");
-    digitalWrite(LED_PIN, HIGH);  // LED ON after OTA
-  }
+  Serial.println("Connecting WiFi...");
 }
 
 /* ================= LOOP ================= */
 void loop() {
-  // Normal application code
   delay(1000);
 }
