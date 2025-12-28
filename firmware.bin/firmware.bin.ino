@@ -4,22 +4,23 @@
 #include <Update.h>
 #include <Preferences.h>
 
-/* ================= USER SETTINGS ================= */
+/* ================= PIN CONFIG ================= */
+#define LED_PIN 2   // Onboard LED
 
-const char* ssid = "COFE_B";
+/* ================= WIFI CONFIG ================= */
+const char* ssid     = "COFE_B";
 const char* password = "COFE12345B";
 
+/* ================= OTA CONFIG ================= */
 // GitHub RAW firmware URL
 const char* firmwareUrl =
 "https://raw.githubusercontent.com/sarvindk/esp32-ota/main/firmware.bin";
 
-/* ================================================= */
-
+/* ================= GLOBAL OBJECTS ================= */
 WiFiClientSecure client;
 Preferences prefs;
 
 /* ================= WIFI EVENT HANDLER ================= */
-
 void WiFiEvent(WiFiEvent_t event) {
   switch (event) {
 
@@ -33,8 +34,7 @@ void WiFiEvent(WiFiEvent_t event) {
       break;
 
     case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
-      Serial.println("WiFi disconnected");
-      Serial.println("Retrying WiFi...");
+      Serial.println("WiFi disconnected. Reconnecting...");
       WiFi.reconnect();
       break;
 
@@ -44,16 +44,15 @@ void WiFiEvent(WiFiEvent_t event) {
 }
 
 /* ================= OTA FUNCTION ================= */
-
 void doOTA() {
+
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("WiFi not connected. OTA skipped.");
     return;
   }
 
   Serial.println("Starting OTA update...");
-
-  client.setInsecure();  // HTTPS without certificate (testing)
+  client.setInsecure();   // HTTPS (testing)
 
   HTTPClient http;
   http.begin(client, firmwareUrl);
@@ -66,27 +65,35 @@ void doOTA() {
   }
 
   int contentLength = http.getSize();
-  bool canBegin = Update.begin(contentLength);
+  Serial.printf("Firmware Size: %d bytes\n", contentLength);
 
-  if (!canBegin) {
+  if (!Update.begin(contentLength)) {
     Serial.println("Not enough space for OTA");
     http.end();
     return;
   }
 
   WiFiClient* stream = http.getStreamPtr();
-  size_t written = Update.writeStream(*stream);
+  size_t written = 0;
+  uint8_t buff[128];
 
-  if (written == contentLength) {
-    Serial.println("Written successfully");
-  } else {
-    Serial.println("Written partially");
+  // LED BLINK while downloading
+  while (written < contentLength) {
+    size_t available = stream->available();
+    if (available) {
+      size_t readBytes = stream->readBytes(buff, min(available, sizeof(buff)));
+      Update.write(buff, readBytes);
+      written += readBytes;
+
+      digitalWrite(LED_PIN, !digitalRead(LED_PIN)); // blink
+      delay(50);
+    }
   }
 
   if (Update.end()) {
     if (Update.isFinished()) {
       Serial.println("OTA Update Success!");
-      prefs.putBool("done", true);   // mark OTA done
+      prefs.putBool("done", true);   // Mark OTA done
       delay(1000);
       ESP.restart();
     } else {
@@ -100,10 +107,12 @@ void doOTA() {
 }
 
 /* ================= SETUP ================= */
-
 void setup() {
   Serial.begin(115200);
   delay(1000);
+
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, LOW);   // LED OFF (Before OTA)
 
   prefs.begin("ota", false);
 
@@ -112,10 +121,8 @@ void setup() {
 
   Serial.println("Connecting to WiFi...");
 
-  // Wait max 10 seconds for WiFi
-  unsigned long startAttemptTime = millis();
-  while (WiFi.status() != WL_CONNECTED &&
-         millis() - startAttemptTime < 10000) {
+  unsigned long startTime = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - startTime < 10000) {
     delay(500);
     Serial.print(".");
   }
@@ -126,13 +133,13 @@ void setup() {
   if (!otaDone) {
     doOTA();   // OTA runs only once
   } else {
-    Serial.println("OTA already completed. Normal run.");
+    Serial.println("OTA already completed.");
+    digitalWrite(LED_PIN, HIGH);  // LED ON after OTA
   }
 }
 
 /* ================= LOOP ================= */
-
 void loop() {
-  // Your normal program code here
+  // Normal application code
   delay(1000);
 }
